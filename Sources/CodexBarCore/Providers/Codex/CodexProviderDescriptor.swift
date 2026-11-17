@@ -435,10 +435,30 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
                 isAPIKey: credentials.isAPIKey)
         }
 
-        let usage = try await CodexOAuthUsageFetcher.fetchUsage(
-            accessToken: credentials.accessToken,
-            accountId: credentials.accountId,
-            env: context.env)
+        let usage: CodexUsageResponse
+        do {
+            usage = try await CodexOAuthUsageFetcher.fetchUsage(
+                accessToken: credentials.accessToken,
+                accountId: credentials.accountId,
+                env: context.env)
+        } catch let error as CodexOAuthFetchError {
+            guard case let .networkError(underlying) = error,
+                  (underlying as? URLError)?.code == .secureConnectionFailed,
+                  let resetCredits = try await Self.fetchResetCreditsIfRequested(
+                      context: context,
+                      credentials: credentials),
+                  resetCredits.availableInventory(at: Date()).count > 0
+            else { throw error }
+
+            // A verified reset-credit response can be shown even when the usage TLS connection fails.
+            return try Self.makeResult(
+                usageResponse: nil,
+                resetCredits: resetCredits,
+                credentials: credentials,
+                updatedAt: resetCredits.updatedAt,
+                includeCredits: context.includeCredits,
+                codexResetCreditsAttempted: true)
+        }
         let resetCreditsAttempted = Self.shouldFetchResetCredits(context)
         let resetCredits = try await Self.fetchResetCreditsIfRequested(
             context: context,
@@ -617,7 +637,7 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
     }
 
     private static func makeResult(
-        usageResponse: CodexUsageResponse,
+        usageResponse: CodexUsageResponse?,
         resetCredits: CodexRateLimitResetCreditsSnapshot? = nil,
         credentials: CodexOAuthCredentials,
         updatedAt: Date,
@@ -625,17 +645,16 @@ struct CodexOAuthFetchStrategy: ProviderFetchStrategy {
         allowEmptyUsageForResetCreditEnrichment: Bool = false,
         codexResetCreditsAttempted: Bool = false) throws -> ProviderFetchResult
     {
-        let credits = Self.mapCredits(
-            response: usageResponse,
-            updatedAt: updatedAt,
-            includeCredits: includeCredits)
-        let reconciled = CodexReconciledState.fromOAuth(
+        let credits = usageResponse.flatMap {
+            Self.mapCredits(response: $0, updatedAt: updatedAt, includeCredits: includeCredits)
+        }
+
+        let usage: UsageSnapshot
+        if let usageResponse, let reconciled = CodexReconciledState.fromOAuth(
             response: usageResponse,
             credentials: credentials,
             updatedAt: updatedAt)
-
-        let usage: UsageSnapshot
-        if let reconciled {
+        {
             let dataConfidence: UsageDataConfidence = usageResponse.rateLimit?.hasWindowDecodeFailure == true
                 || usageResponse.additionalRateLimitsDecodeFailed
                 ? .unknown

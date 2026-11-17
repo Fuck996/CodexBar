@@ -429,12 +429,24 @@ public enum CodexOAuthUsageFetcher {
         env: [String: String] = ProcessInfo.processInfo.environment,
         timeout: TimeInterval = 4) async throws -> CodexRateLimitResetCreditsSnapshot
     {
-        try await self.fetchRateLimitResetCredits(
+        let transport: any ProviderHTTPTransport
+        #if os(macOS)
+        if let override = CodexAuthenticatedHTTPTransport.overrideForTesting {
+            transport = override
+        } else if Self.resolveRateLimitResetCreditsURL(env: env) == CodexResetCreditsCurlTransport.endpoint {
+            transport = CodexResetCreditsCurlTransport()
+        } else {
+            transport = CodexAuthenticatedHTTPTransport.shared
+        }
+        #else
+        transport = CodexAuthenticatedHTTPTransport.current
+        #endif
+        return try await self.fetchRateLimitResetCredits(
             accessToken: accessToken,
             accountId: accountId,
             env: env,
             timeout: timeout,
-            session: CodexAuthenticatedHTTPTransport.current)
+            session: transport)
     }
 
     public static func fetchSpendControlsMonthlyUsage(
