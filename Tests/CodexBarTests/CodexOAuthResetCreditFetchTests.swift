@@ -1,6 +1,9 @@
 import Foundation
 import Testing
 @testable import CodexBarCore
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 struct CodexOAuthResetCreditFetchTests {
     @Test
@@ -117,10 +120,64 @@ struct CodexOAuthResetCreditFetchTests {
         #expect(CodexOAuthFetchStrategy._shouldFetchResetCreditsForTesting(cliCreditsContext))
     }
 
+    @Test
+    func `usage TLS failure still publishes independently fetched reset credits`() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let auth = """
+        {"tokens":{"access_token":"access","refresh_token":"refresh","account_id":"account-123"},
+         "last_refresh":"\(ISO8601DateFormatter().string(from: Date()))"}
+        """
+        try Data(auth.utf8).write(to: home.appendingPathComponent("auth.json"))
+
+        let transport = ProviderHTTPTransportStub { request in
+            let url = try #require(request.url)
+            if url.path.hasSuffix("/usage") {
+                throw URLError(.secureConnectionFailed)
+            }
+            #expect(url.path.hasSuffix("/rate-limit-reset-credits"))
+            #expect(request.value(forHTTPHeaderField: "ChatGPT-Account-ID") == "account-123")
+            let response = try #require(HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+            let body = """
+            {"credits":[{"id":"reset-1","reset_type":"codex_rate_limits","status":"available",
+                         "granted_at":"2026-01-01T00:00:00Z"}],"available_count":1}
+            """
+            return (Data(body.utf8), response)
+        }
+
+        let result = try await CodexAuthenticatedHTTPTransport.$overrideForTesting.withValue(transport) {
+            try await CodexOAuthFetchStrategy().fetch(Self.context(runtime: .app, env: ["CODEX_HOME": home.path]))
+        }
+        #expect(result.usage.primary == nil)
+        #expect(result.usage.secondary == nil)
+        #expect(result.usage.codexResetCredits?.availableInventory(at: Date()).count == 1)
+        #expect(result.codexResetCreditsAttempted)
+        #expect(await transport.requests().count == 2)
+    }
+
+    #if os(macOS)
+    @Test
+    func `curl headers are scoped to the official reset credit endpoint`() throws {
+        var request = URLRequest(url: CodexResetCreditsCurlTransport.endpoint)
+        request.httpMethod = "GET"
+        request.setValue("Bearer test-token", forHTTPHeaderField: "Authorization")
+        let headers = try CodexResetCreditsCurlTransport.headerInput(for: request)
+        #expect(String(decoding: headers, as: UTF8.self) == "Authorization: Bearer test-token\n")
+
+        request.url = URL(string: "https://example.com/backend-api/wham/rate-limit-reset-credits")
+        #expect(throws: URLError.self) {
+            _ = try CodexResetCreditsCurlTransport.headerInput(for: request)
+        }
+    }
+    #endif
+
     private static func context(
         runtime: ProviderRuntime,
         includeCredits: Bool = true,
-        includeOptionalUsage: Bool = false) -> ProviderFetchContext
+        includeOptionalUsage: Bool = false,
+        env: [String: String] = [:]) -> ProviderFetchContext
     {
         let browserDetection = BrowserDetection(cacheTTL: 0)
         return ProviderFetchContext(
@@ -131,7 +188,7 @@ struct CodexOAuthResetCreditFetchTests {
             webTimeout: 60,
             webDebugDumpHTML: false,
             verbose: false,
-            env: [:],
+            env: env,
             settings: nil,
             fetcher: UsageFetcher(),
             claudeFetcher: ClaudeUsageFetcher(browserDetection: browserDetection),

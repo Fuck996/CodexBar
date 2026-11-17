@@ -125,7 +125,7 @@ public struct CodexReconciledState: Sendable {
     }
 
     public static func oauthIdentity(
-        response: CodexUsageResponse,
+        response: CodexUsageResponse?,
         credentials: CodexOAuthCredentials) -> ProviderIdentitySnapshot
     {
         ProviderIdentitySnapshot(
@@ -148,7 +148,7 @@ public struct CodexReconciledState: Sendable {
 
     /// The raw plan source chosen by OAuth resolution: the usage response first, then ID-token claims.
     public static func oauthPlanObservation(
-        response: CodexUsageResponse,
+        response: CodexUsageResponse?,
         credentials: CodexOAuthCredentials,
         observedAt: Date) -> ProviderPlanObservation?
     {
@@ -223,8 +223,8 @@ public struct CodexReconciledState: Sendable {
         return email?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func usageResponsePlan(_ response: CodexUsageResponse) -> String? {
-        guard let plan = response.planType?.rawValue, !plan.isEmpty else { return nil }
+    private static func usageResponsePlan(_ response: CodexUsageResponse?) -> String? {
+        guard let plan = response?.planType?.rawValue, !plan.isEmpty else { return nil }
         return plan
     }
 
@@ -244,7 +244,7 @@ public struct CodexReconciledState: Sendable {
         self.usageResponsePlan(response) ?? whoami?.planType
     }
 
-    private static func resolvePlan(response: CodexUsageResponse, credentials: CodexOAuthCredentials) -> String? {
+    private static func resolvePlan(response: CodexUsageResponse?, credentials: CodexOAuthCredentials) -> String? {
         self.usageResponsePlan(response) ?? self.oauthClaimPlan(credentials)
     }
 }
